@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.errors import ApiError
-from app.hyperliquid.client import place_spot_ioc
+from app.hyperliquid.client import aggressive_limit, l2_book, place_spot_ioc
 from app.ledger.service import pay_need, release_reserve, settle_from_fill
 from app.models import Trade
 from app.realtime.hub import hub
@@ -43,11 +43,12 @@ def _advance(session, trade: Trade) -> None:
         return
     if trade.status == "swapping":
         try:
+            book = l2_book()
             fill = place_spot_ioc(
                 trade_id=trade.id,
                 is_buy=trade.side == "buy",
                 qty=trade.base_qty,
-                limit_px=trade.price,
+                limit_px=aggressive_limit(book.mid, trade.side == "buy"),
             )
         except ApiError as exc:
             _fail(session, trade, exc.message)

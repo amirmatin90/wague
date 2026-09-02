@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.audit.service import write_audit
 from app.errors import ApiError
 from app.hyperliquid.cloid import hedge_cloid
+from app.ledger.service import covers_pay, reserve_for_trade
 from app.models import KillSwitch, Quote, Trade, TradeStage
 from app.realtime.hub import hub
 from app.schemas import trade_public
@@ -90,8 +91,30 @@ def honor_quote(session: Session, user_id: UUID, quote_id: UUID) -> dict:
     session.add(trade)
     session.flush()
     add_stage(session, trade, "accepted")
-    create_deposit(session, trade)
-    add_stage(session, trade, "awaiting_deposit")
+    funded = covers_pay(
+        session,
+        quote.user_id,
+        quote.side,
+        quote.base_qty,
+        quote.quote_qty,
+        quote.fee_amount,
+    )
+    if funded:
+        reserve_for_trade(
+            session,
+            user_id=quote.user_id,
+            side=quote.side,
+            base=quote.base,
+            quote=quote.quote_asset,
+            base_qty=quote.base_qty,
+            quote_qty=quote.quote_qty,
+            fee_amount=quote.fee_amount,
+            trade_id=trade.id,
+        )
+        add_stage(session, trade, "reserved")
+    else:
+        create_deposit(session, trade)
+        add_stage(session, trade, "awaiting_deposit")
     quote.status = "accepted"
     write_audit(
         session,

@@ -11,6 +11,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.hyperliquid.client import set_test_book
+
+set_test_book(
+    {
+        "coin": "@0",
+        "asset": 10000,
+        "bids": [(Decimal("3490"), Decimal("100"))],
+        "asks": [(Decimal("3510"), Decimal("100"))],
+        "mid": Decimal("3500"),
+    }
+)
+
 from app.main import app
 
 
@@ -18,7 +29,8 @@ from app.main import app
 def test_book() -> None:
     set_test_book(
         {
-            "coin": "UETH/USDC",
+            "coin": "@0",
+            "asset": 10000,
             "bids": [(Decimal("3490"), Decimal("100"))],
             "asks": [(Decimal("3510"), Decimal("100"))],
             "mid": Decimal("3500"),

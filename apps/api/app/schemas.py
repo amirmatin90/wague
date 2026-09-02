@@ -52,6 +52,7 @@ def quote_public(quote: Quote, extras: dict | None = None) -> dict:
         for key in ("pay_usd", "receive_usd", "mid"):
             if key in extras:
                 body[key] = money(extras[key], USDC_QUANT)
+    assert_no_venue_ids(body)
     return body
 
 
@@ -103,6 +104,7 @@ def trade_public(trade: Trade, stages: list[TradeStage], deposit: Deposit | None
     }
     if deposit is not None:
         body["deposit"] = deposit_public(deposit)
+    assert_no_venue_ids(body)
     return body
 
 

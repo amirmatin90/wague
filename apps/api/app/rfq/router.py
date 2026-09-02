@@ -130,7 +130,7 @@ def list_tokens() -> dict:
                 "asset": "BTC",
                 "name": "Bitcoin",
                 "available": False,
-                "reason": "Unavailable on Hyperliquid testnet (no UBTC)",
+                "reason": "unavailable on testnet",
             },
         ]
     }

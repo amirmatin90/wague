@@ -46,6 +46,12 @@ def agent_key() -> str | None:
     return key or None
 
 
+def _agent_address(key: str) -> str:
+    from eth_account import Account
+
+    return Account.from_key(key).address
+
+
 def assert_testnet() -> None:
     present = [name for name in FORBIDDEN_KEYS if os.environ.get(name)]
     if present:
@@ -61,9 +67,18 @@ def assert_testnet() -> None:
                 raise SystemExit(f"Refuse to start: {name} points at a mainnet Hyperliquid host.")
 
     network = os.environ.get("HL_NETWORK", get_settings().hl_network).strip().lower()
+    if network == "mainnet":
+        raise SystemExit("Refuse to start: HL_NETWORK=mainnet is forbidden.")
     if network != "testnet":
         raise SystemExit("Refuse to start: HL_NETWORK must be testnet.")
 
     api_url = os.environ.get("HL_API_URL", get_settings().hl_api_url).strip()
+    if "api.hyperliquid.xyz" in api_url.lower() and "testnet" not in api_url.lower():
+        raise SystemExit("Refuse to start: host is api.hyperliquid.xyz (mainnet).")
     if "testnet" not in api_url.lower():
         raise SystemExit("Refuse to start: HL_API_URL must be the Hyperliquid testnet host.")
+
+    key = agent_key()
+    master = os.environ.get("HL_MASTER_ADDRESS", "").strip()
+    if key and master and _agent_address(key).lower() == master.lower():
+        raise SystemExit("Refuse to start: agent address equals HL_MASTER_ADDRESS.")

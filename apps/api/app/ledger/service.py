@@ -131,6 +131,18 @@ def release_reserve(
     )
 
 
+def available_balance(session: Session, user_id: UUID, asset: str) -> Decimal:
+    account = get_account(session, "client", user_id, asset, "available", for_update=True)
+    if account is None:
+        return Decimal("0")
+    return Decimal(account.balance)
+
+
+def covers_pay(session: Session, user_id: UUID, side: str, base_qty: Decimal, quote_qty: Decimal, fee_amount: Decimal) -> bool:
+    asset, amount = pay_need(side, base_qty, quote_qty, fee_amount)
+    return available_balance(session, user_id, asset) >= amount
+
+
 def pay_need(side: str, base_qty: Decimal, quote_qty: Decimal, fee_amount: Decimal) -> tuple[str, Decimal]:
     if side == "buy":
         return "USDC", quote_qty + fee_amount

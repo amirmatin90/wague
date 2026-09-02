@@ -1,3 +1,5 @@
+import { mockApi } from "./mock";
+
 export type Role = "client" | "ops" | "cto";
 
 export type Session = {
@@ -52,6 +54,10 @@ export type Trade = {
   stages: { name: string; at: string }[];
   deposit?: Deposit;
   fill?: { filled_qty: string; avg_price: string } | null;
+  base?: string;
+  quote?: string;
+  side?: string;
+  base_qty?: string;
 };
 
 export class ApiError extends Error {
@@ -63,6 +69,8 @@ export class ApiError extends Error {
     this.code = code;
   }
 }
+
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
 
 function newKey(): string {
   return crypto.randomUUID();
@@ -101,30 +109,67 @@ export async function api<T>(
 }
 
 export const login = (email: string, password: string) =>
-  api<Session>("/v1/auth/login", { method: "POST", body: { email, password } });
+  USE_MOCK
+    ? mockApi.login(email)
+    : api<Session>("/v1/auth/login", { method: "POST", body: { email, password } });
 
-export const listTokens = () => api<{ tokens: TokenInfo[] }>("/v1/tokens");
+export const listTokens = () =>
+  USE_MOCK ? mockApi.listTokens() : api<{ tokens: TokenInfo[] }>("/v1/tokens");
 
 export const createQuote = (
   token: string,
   body: { pay_asset: string; receive_asset: string; pay_qty: string },
-) => api<Quote>("/v1/quotes", { method: "POST", token, body, idempotent: true });
+) =>
+  USE_MOCK
+    ? mockApi.createQuote(token, body)
+    : api<Quote>("/v1/quotes", { method: "POST", token, body, idempotent: true });
 
 export const acceptQuote = (token: string, quoteId: string) =>
-  api<Trade>(`/v1/quotes/${quoteId}/accept`, { method: "POST", token, idempotent: true });
+  USE_MOCK
+    ? mockApi.acceptQuote(token, quoteId)
+    : api<Trade>(`/v1/quotes/${quoteId}/accept`, { method: "POST", token, idempotent: true });
 
-export const getTrade = (token: string, tradeId: string) => api<Trade>(`/v1/trades/${tradeId}`, { token });
+export const getTrade = (token: string, tradeId: string) =>
+  api<Trade>(`/v1/trades/${tradeId}`, { token });
 
-export const simulateDeposit = (token: string, tradeId: string) =>
-  api<{ deposit: Deposit; trade: Trade }>("/v1/deposits/simulate", {
-    method: "POST",
-    token,
-    body: { trade_id: tradeId },
-    idempotent: true,
-  });
+export const simulateDeposit = (token: string, tradeId: string, chainTxId: string) =>
+  USE_MOCK
+    ? mockApi.simulateDeposit(token, {
+        trade_id: tradeId,
+        quote_id: "",
+        pay_asset: "",
+        receive_asset: "",
+        pay_qty: "",
+        receive_qty: "",
+        price: "",
+        status: "awaiting_deposit",
+        stages: [],
+        deposit: {
+          deposit_id: "",
+          trade_id: tradeId,
+          asset: "USDC",
+          amount: "0",
+          address: "",
+          status: "waiting",
+          chain_tx_id: null,
+        },
+      })
+    : api<{ deposit: Deposit; trade: Trade }>("/v1/deposits/simulate", {
+        method: "POST",
+        token,
+        body: { trade_id: tradeId, chain_tx_id: chainTxId },
+        idempotent: true,
+      });
+
+export const getDepositAddress = (token: string) =>
+  USE_MOCK
+    ? mockApi.getDepositAddress()
+    : api<{ address: string; assets: string[] }>("/v1/deposits/address", { token });
 
 export const getBalances = (token: string) =>
-  api<{ balances: { asset: string; available: string; reserved: string }[] }>("/v1/balances", { token });
+  USE_MOCK
+    ? mockApi.getBalances()
+    : api<{ balances: { asset: string; available: string; reserved: string }[] }>("/v1/balances", { token });
 
 export type Position = { asset: string; qty: string };
 export type Recon = {

@@ -1,26 +1,39 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   acceptQuote,
   createQuote,
   getBalances,
+  getDepositAddress,
   getTrade,
   listTokens,
+  login,
   simulateDeposit,
   type Quote,
   type TokenInfo,
   type Trade,
 } from "../api";
 import { clearSession, loadSession, saveSession } from "../session";
-import { login } from "../api";
 
-const STEPS = ["accepted", "awaiting_deposit", "reserved", "swapping", "settling", "settled"];
+const STATUS_STEPS = ["accepted", "reserved", "filling", "settled"] as const;
 
-function usdLabel(value?: string, fallback = "$0") {
-  if (!value) return fallback;
+function usdLabel(value?: string) {
+  if (!value) return "";
   const n = Number(value);
   if (Number.isNaN(n)) return `$${value}`;
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function formatPay(amount: string, asset: string) {
+  const n = Number(amount);
+  if (!amount || Number.isNaN(n)) return `${amount} ${asset}`.trim();
+  return `${n.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${asset}`;
+}
+
+function displayStatus(status: string) {
+  if (status === "swapping" || status === "settling") return "filling";
+  if (status === "awaiting_deposit") return "accepted";
+  return status;
 }
 
 export function Swap() {
@@ -33,49 +46,81 @@ export function Swap() {
   const [trade, setTrade] = useState<Trade | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [quoting, setQuoting] = useState(false);
   const [picker, setPicker] = useState<"pay" | "receive" | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [email, setEmail] = useState("client@desk.local");
   const [password, setPassword] = useState("client-local");
-  const [balances, setBalances] = useState<string>("");
+  const [balances, setBalances] = useState<{ asset: string; available: string }[]>([]);
+  const [depositAddress, setDepositAddress] = useState("");
   const [search, setSearch] = useState("");
+  const [copied, setCopied] = useState(false);
+  const quoteSeq = useRef(0);
+  const executeLock = useRef(false);
 
   useEffect(() => {
-    listTokens().then((data) => setTokens(data.tokens)).catch(() => undefined);
+    listTokens()
+      .then((data) => setTokens(data.tokens))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
     if (!session) return;
     getBalances(session.access_token)
-      .then((data) =>
-        setBalances(data.balances.map((row) => `${row.asset} ${row.available}`).join(" · ")),
-      )
+      .then((data) => setBalances(data.balances.map((row) => ({ asset: row.asset, available: row.available }))))
+      .catch(() => undefined);
+    getDepositAddress(session.access_token)
+      .then((data) => setDepositAddress(data.address))
       .catch(() => undefined);
   }, [session, trade?.status]);
 
   useEffect(() => {
     if (!session || !trade) return;
+    if (trade.status === "settled" || trade.status === "failed") return;
     const stream = new EventSource(`/v1/stream?token=${session.access_token}`);
     stream.onmessage = (event) => {
       const payload = JSON.parse(event.data) as { type?: string; trade_id?: string };
-      if (payload.trade_id) {
+      if (payload.trade_id === trade.trade_id) {
         getTrade(session.access_token, payload.trade_id).then(setTrade).catch(() => undefined);
       }
     };
     return () => stream.close();
-  }, [session, trade?.trade_id]);
+  }, [session, trade?.trade_id, trade?.status]);
+
+  const liveQuote =
+    quote && quote.pay_asset === payAsset && quote.receive_asset === receiveAsset && quote.pay_qty && amount
+      ? quote
+      : null;
+
+  const availablePay = balances.find((row) => row.asset === payAsset)?.available;
+  const funded =
+    availablePay !== undefined && amount !== "" && Number(availablePay) >= Number(amount) && Number(amount) > 0;
 
   const cta = useMemo(() => {
-    if (busy && !quote) return "Fetching quote";
-    if (trade?.status === "settled") return "Done";
-    return "Swap";
-  }, [busy, quote, trade, amount]);
+    if (!session) return "Sign in to swap";
+    if (busy && !liveQuote) return "Fetching quote";
+    if (quoting) return "Fetching quote";
+    if (trade?.status === "settled") return "Swap complete";
+    if (trade?.status === "failed") return "Start a new swap";
+    if (liveQuote) return `Swap ${formatPay(liveQuote.pay_qty, liveQuote.pay_asset)}`;
+    if (!amount) return "Enter an amount";
+    return "Get quote";
+  }, [busy, liveQuote, quoting, trade, amount, session]);
+
+  function resetQuote() {
+    quoteSeq.current += 1;
+    setQuote(null);
+    setTrade(null);
+    setError("");
+    setConfirmOpen(false);
+    executeLock.current = false;
+  }
 
   function flip() {
     setPayAsset(receiveAsset);
     setReceiveAsset(payAsset);
-    setQuote(null);
-    setTrade(null);
+    resetQuote();
   }
 
   function choose(asset: string) {
@@ -89,8 +134,7 @@ export function Swap() {
       if (asset === payAsset) setPayAsset(asset === "USDC" ? "ETH" : "USDC");
     }
     setPicker(null);
-    setQuote(null);
-    setTrade(null);
+    resetQuote();
   }
 
   async function fetchQuote(nextAmount = amount) {
@@ -99,7 +143,9 @@ export function Swap() {
       return;
     }
     if (!nextAmount) return;
-    setBusy(true);
+    const seq = ++quoteSeq.current;
+    setQuoting(true);
+    setQuote(null);
     setError("");
     try {
       const next = await createQuote(session.access_token, {
@@ -107,30 +153,41 @@ export function Swap() {
         receive_asset: receiveAsset,
         pay_qty: nextAmount,
       });
+      if (seq !== quoteSeq.current) return;
       setQuote(next);
     } catch (err) {
+      if (seq !== quoteSeq.current) return;
       setQuote(null);
       setError(err instanceof ApiError ? err.message : "Quote failed");
     } finally {
-      setBusy(false);
+      if (seq === quoteSeq.current) setQuoting(false);
     }
   }
 
-  async function onSwap() {
+  async function commitSwap() {
     if (!session) {
       setLoginOpen(true);
       return;
     }
-    if (!quote) {
+    if (trade?.status === "failed") {
+      resetQuote();
+      return;
+    }
+    if (!liveQuote) {
       await fetchQuote();
       return;
     }
+    if (executeLock.current) return;
+    setConfirmOpen(true);
+    executeLock.current = true;
     setBusy(true);
     setError("");
     try {
-      const next = await acceptQuote(session.access_token, quote.quote_id);
+      const next = await acceptQuote(session.access_token, liveQuote.quote_id);
       setTrade(next);
+      setConfirmOpen(false);
     } catch (err) {
+      executeLock.current = false;
       setError(err instanceof ApiError ? err.message : "Swap failed");
     } finally {
       setBusy(false);
@@ -138,16 +195,27 @@ export function Swap() {
   }
 
   async function onSimulate() {
-    if (!session || !trade) return;
+    if (!session || !trade || trade.status !== "awaiting_deposit") return;
+    if (executeLock.current && trade.status !== "awaiting_deposit") return;
     setBusy(true);
     setError("");
     try {
-      const next = await simulateDeposit(session.access_token, trade.trade_id);
+      const next = await simulateDeposit(session.access_token, trade.trade_id, `sim-${crypto.randomUUID()}`);
       setTrade(next.trade);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Simulate deposit failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyAddress(address: string) {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError("Could not copy address");
     }
   }
 
@@ -170,16 +238,19 @@ export function Swap() {
     }
   }
 
-  const receiveDisplay = quote && quote.pay_asset === payAsset ? quote.receive_qty : "0";
+  const receiveDisplay = liveQuote ? liveQuote.receive_qty : "";
   const visibleTokens = tokens.filter(
     (row) =>
       !search ||
       row.asset.toLowerCase().includes(search.toLowerCase()) ||
       row.name.toLowerCase().includes(search.toLowerCase()),
   );
+  const needsDeposit = trade?.status === "awaiting_deposit";
+  const address = trade?.deposit?.address || depositAddress;
+  const shownStatus = trade ? displayStatus(trade.status) : "";
 
   return (
-    <div className="pasture">
+    <div className="desk">
       <header className="nav">
         <div className="brand">WAGUE</div>
         <div className="nav-links">
@@ -191,6 +262,7 @@ export function Swap() {
             onClick={() => {
               clearSession();
               setSession(null);
+              resetQuote();
             }}
           >
             {session.email.split("@")[0]}
@@ -215,8 +287,7 @@ export function Swap() {
                 value={amount}
                 onChange={(event) => {
                   setAmount(event.target.value);
-                  setQuote(null);
-                  setTrade(null);
+                  resetQuote();
                 }}
                 onBlur={() => fetchQuote()}
               />
@@ -226,7 +297,7 @@ export function Swap() {
                 <span>▾</span>
               </button>
             </div>
-            <div className="usd">{usdLabel(quote?.pay_usd)}</div>
+            <div className="usd">{liveQuote ? usdLabel(liveQuote.pay_usd) : quoting ? " " : "$0"}</div>
           </div>
           <button className="flip" onClick={flip} aria-label="Flip assets">
             ↕
@@ -234,58 +305,93 @@ export function Swap() {
           <div className="leg dim">
             <div className="leg-label">You receive</div>
             <div className="leg-row">
-              <div className="amount">{receiveDisplay}</div>
+              {quoting ? (
+                <div className="amount skeleton" aria-hidden="true" />
+              ) : (
+                <div className="amount">{receiveDisplay || "0"}</div>
+              )}
               <button className="chip" onClick={() => setPicker("receive")}>
                 <span className={`token-dot ${receiveAsset}`}>{receiveAsset[0]}</span>
                 {receiveAsset}
                 <span>▾</span>
               </button>
             </div>
-            <div className="usd">{usdLabel(quote?.receive_usd)}</div>
+            <div className="usd">{liveQuote && !quoting ? usdLabel(liveQuote.receive_usd) : ""}</div>
           </div>
-          {quote ? (
+          {liveQuote ? (
             <div className="rate-row">
-              <span>Rate</span>
-              <span>
-                1 ETH = {quote.price} USDC · fee {quote.fee_amount}
-              </span>
+              <span>All-in fee</span>
+              <span>{liveQuote.fee_amount} USDC</span>
             </div>
           ) : null}
-          <button className="cta" disabled={busy || !amount} onClick={onSwap}>
+          <button className="cta" disabled={busy || quoting || !amount} onClick={commitSwap}>
             {cta}
           </button>
+          {confirmOpen && liveQuote && !trade ? (
+            <div className="confirm">
+              Confirm {formatPay(liveQuote.pay_qty, liveQuote.pay_asset)} for {liveQuote.receive_qty}{" "}
+              {liveQuote.receive_asset}. Fee {liveQuote.fee_amount} USDC from the locked quote.
+            </div>
+          ) : null}
           {error ? <div className="banner">{error}</div> : null}
 
-          {trade?.deposit ? (
-            <div className="deposit-box">
-              <label>Deposit {trade.deposit.asset} to continue</label>
-              <div className="addr">{trade.deposit.address}</div>
+          {trade && !needsDeposit ? (
+            <div className="status-box">
               <div className="status-row">
-                <span>Amount</span>
+                <span>Status</span>
+                <b>{shownStatus}</b>
+              </div>
+              <div className="steps">
+                {STATUS_STEPS.map((name) => (
+                  <span key={name} className={shownStatus === name || trade.stages.some((s) => displayStatus(s.name) === name) ? "on" : ""}>
+                    {name}
+                  </span>
+                ))}
+              </div>
+              {trade.error_message ? <div className="banner">{trade.error_message}</div> : null}
+              {trade.status === "failed" ? (
+                <button className="ghost-btn" onClick={resetQuote}>
+                  Start a new swap
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          {needsDeposit ? (
+            <div className="deposit-box">
+              <label>
+                Deposit {trade.deposit?.amount} {trade.deposit?.asset}
+              </label>
+              <div className="addr">
+                <span>{address}</span>
+                <button type="button" className="copy" onClick={() => copyAddress(address)}>
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="status-row">
+                <span>Amount due</span>
                 <b>
-                  {trade.deposit.amount} {trade.deposit.asset}
+                  {trade.deposit?.amount} {trade.deposit?.asset}
                 </b>
               </div>
               <div className="status-row">
                 <span>Status</span>
-                <b>{trade.status === "awaiting_deposit" ? trade.deposit.status : trade.status}</b>
+                <b>{trade.deposit?.status || trade.status}</b>
               </div>
-              <div className="steps">
-                {STEPS.map((name) => (
-                  <span key={name} className={trade.stages.some((s) => s.name === name) || trade.status === name ? "on" : ""}>
-                    {name.replaceAll("_", " ")}
-                  </span>
-                ))}
-              </div>
-              {trade.status === "awaiting_deposit" ? (
-                <button className="cta" disabled={busy} onClick={onSimulate}>
-                  Simulate deposit (local)
-                </button>
-              ) : null}
+              <button className="cta secondary" disabled={busy} onClick={onSimulate}>
+                Simulate deposit
+              </button>
               {trade.error_message ? <div className="banner">{trade.error_message}</div> : null}
             </div>
           ) : null}
-          {session && balances ? <div className="balances">{balances}</div> : null}
+          {session ? (
+            <div className="balances">
+              {funded ? "Ledger covers this pay amount." : null}
+              {balances.length
+                ? balances.map((row) => `${row.asset} ${row.available}`).join(" · ")
+                : null}
+            </div>
+          ) : null}
         </section>
       </main>
 
@@ -312,7 +418,7 @@ export function Swap() {
                 <span className={`token-dot ${row.asset}`}>{row.asset[0]}</span>
                 <span>
                   {row.asset}
-                  <small>{row.available ? row.name : row.reason}</small>
+                  <small>{row.available ? row.name : row.reason || "unavailable on testnet"}</small>
                 </span>
               </button>
             ))}

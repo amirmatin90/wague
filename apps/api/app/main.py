@@ -13,6 +13,7 @@ from app.config import assert_testnet, get_settings
 from app.deposit.router import router as deposit_router
 from app.db import SessionLocal
 from app.errors import ApiError, api_error_handler
+from app.hyperliquid.client import warm_spot_market
 from app.identity.router import router as identity_router
 from app.realtime.router import router as realtime_router
 from app.rfq.router import router as rfq_router
@@ -25,6 +26,7 @@ from app.workers import start_workers
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     assert_testnet()
+    warm_spot_market()
     seed()
     start_workers()
     yield

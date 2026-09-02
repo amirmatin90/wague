@@ -1,10 +1,10 @@
 # WAGUE
 
-Public swap page inspired by the Wagyu layout (centered card, amount-first type, asset chips, token picker). This repo is **WAGUE**. It does not use the Wagyu name, mascot, points, or leaderboard.
+Home is `/` — a centered swap card (pay token, receive token, amount, one CTA). This repo is **WAGUE**. It does not use another product's name, mascot, points, or leaderboard.
 
-Home is `/` — a swap card. Quotes come from the live Hyperliquid **testnet** book. After you accept a firm quote, you deposit the pay asset. The ledger credits only after confirmation. Then the API places a real Hyperliquid testnet spot **IOC** with the official `hyperliquid-python-sdk`. Fill is settlement. There is no stub fill on this path.
+Quotes come from the live Hyperliquid **testnet** book via the official `hyperliquid-python-sdk` (`Info.l2_snapshot` / mids). The locked quote snapshot stores price, `fee_amount`, and qty. After accept, if the ledger already covers the pay asset, execute starts immediately. Otherwise the client shows a deposit address. The ledger credits only after confirmation (or local simulate-deposit). Then the API places a real Hyperliquid testnet spot **IOC** (`TIF=Ioc`, aggressive vs mid). Fill is settlement. Unfilled IOC is failure. There is no stub fill on this path.
 
-Only **ETH/USDC** (UETH) is live. BTC is listed in the picker as unavailable because testnet has no UBTC.
+Only **ETH/USDC** (UETH) is live. Spot is resolved from `spotMeta` as `@{universe_index}` / asset `10000+index`. BTC is listed in the picker as **unavailable on testnet** because testnet has no UBTC. Do not map BTC to a junk market.
 
 ## Run
 
@@ -29,7 +29,7 @@ export HL_AGENT_KEY_TESTNET=0x...
 docker compose up --build
 ```
 
-Never commit that key. The API refuses to start if `HL_MASTER_KEY`, `HL_WITHDRAW_KEY`, `HL_AGENT_KEY_MAINNET`, or a mainnet host is present.
+Never commit that key. The API refuses to start if `HL_MASTER_KEY`, `HL_WITHDRAW_KEY`, `HL_AGENT_KEY_MAINNET`, a mainnet host, `HL_NETWORK=mainnet`, or an agent key whose address equals `HL_MASTER_ADDRESS` is present.
 
 If the key is missing, the UI still quotes. Execute returns `set HL_AGENT_KEY_TESTNET`.
 
@@ -45,11 +45,15 @@ Use **Account** on `/` to sign in as the client.
 
 ## Demo deposit (no chain)
 
-After Swap, the card shows a deposit address and amount (`waiting → confirmed → swapping → done`).
+`GET /v1/deposits/address` returns one EVM address per client. ETH and USDC share it. BTC has no deposit rail.
 
-For local demo, `POST /v1/deposits/simulate` (Idempotency-Key required) credits the ledger with a synthetic `chain_tx_id`. The UI button is labeled **Simulate deposit (local)**. Real path is: watch chain → credit → then IOC.
+If the pay asset is already on the ledger, accept skips the deposit step and reserves immediately.
 
-Withdraw is out of scope.
+Otherwise the card shows amount due, asset, and a copyable address. Status is rendered from the server (`accepted → reserved → filling → settled`).
+
+For local demo, `POST /v1/deposits/simulate` (Idempotency-Key required) credits the ledger. Body is `{ "trade_id", "chain_tx_id" }` where `chain_tx_id` is a synthetic `sim-…` id. Execute waits until that credit succeeds.
+
+Withdraw is out of scope. There is no withdraw UI.
 
 ## Honor / money
 
