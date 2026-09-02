@@ -48,8 +48,8 @@ def deposit_for_trade(session: Session, trade_id: UUID) -> Deposit | None:
 def simulate_deposit(session: Session, user_id: UUID, trade_id: UUID, chain_tx_id: str) -> dict:
     from app.trade.service import add_stage, stages_for
 
-    if not chain_tx_id.startswith("sim"):
-        raise ApiError(422, "INVALID_CHAIN_TX", "Simulate deposit requires a synthetic sim chain_tx_id")
+    if not (chain_tx_id.startswith("sim:") or chain_tx_id.startswith("sim-")):
+        raise ApiError(422, "INVALID_CHAIN_TX", "Simulate deposit requires a synthetic sim: chain_tx_id")
     trade = session.scalar(select(Trade).where(Trade.id == trade_id).with_for_update())
     if trade is None or trade.user_id != user_id:
         raise ApiError(404, "TRADE_NOT_FOUND", "Trade not found")

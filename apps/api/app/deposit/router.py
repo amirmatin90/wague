@@ -24,8 +24,8 @@ class SimulateDepositRequest(BaseModel):
     @classmethod
     def sim_chain_tx(cls, value: str) -> str:
         text = value.strip()
-        if not text.startswith("sim"):
-            raise ValueError("chain_tx_id must be a synthetic sim id")
+        if not (text.startswith("sim:") or text.startswith("sim-")):
+            raise ValueError("chain_tx_id must be a synthetic sim: id")
         return text
 
 

@@ -57,7 +57,19 @@ def test_simulate_deposit_requires_sim_chain_tx(client: TestClient) -> None:
         headers=auth_headers(token, f"sim-bad-{uuid4()}"),
     )
     assert bad.status_code == 422
-    chain_tx = f"sim-{uuid4()}"
+    missing = client.post(
+        "/v1/deposits/simulate",
+        json={"trade_id": trade_id, "chain_tx_id": f"sim:{uuid4()}"},
+        headers=auth_headers(token),
+    )
+    assert missing.status_code == 400
+    assert missing.json()["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+    after_address = client.get("/v1/deposits/address", headers=auth_headers(token))
+    assert after_address.status_code == 200
+    still = client.get(f"/v1/trades/{trade_id}", headers=auth_headers(token))
+    assert still.json()["status"] == "awaiting_deposit"
+    assert still.json()["deposit"]["address"] == after_address.json()["address"]
+    chain_tx = f"sim:{uuid4()}"
     ok = client.post(
         "/v1/deposits/simulate",
         json={"trade_id": trade_id, "chain_tx_id": chain_tx},
@@ -68,6 +80,8 @@ def test_simulate_deposit_requires_sim_chain_tx(client: TestClient) -> None:
     assert ok.json()["deposit"]["status"] == "credited"
     assert ok.json()["trade"]["status"] == "reserved"
     assert "cloid" not in ok.json()["trade"]
+    assert "oid" not in ok.json()["trade"]
+    assert chain_tx.startswith("sim:")
 
 
 def test_funded_accept_skips_deposit(client: TestClient) -> None:
@@ -110,6 +124,36 @@ def test_funded_accept_skips_deposit(client: TestClient) -> None:
     assert "oid" not in body
 
 
+def test_address_issuance_does_not_execute(client: TestClient) -> None:
+    token = login(client, "client@desk.local", "client-local")
+    quoted = client.post(
+        "/v1/quotes",
+        json={"pay_asset": "USDC", "receive_asset": "ETH", "pay_qty": "25.00"},
+        headers=auth_headers(token, f"quote-addr-{uuid4()}"),
+    )
+    accepted = client.post(
+        f"/v1/quotes/{quoted.json()['quote_id']}/accept",
+        headers=auth_headers(token, f"accept-addr-{uuid4()}"),
+    )
+    assert accepted.json()["status"] == "awaiting_deposit"
+    addr = client.get("/v1/deposits/address", headers=auth_headers(token))
+    assert addr.status_code == 200
+    again = client.get(f"/v1/trades/{accepted.json()['trade_id']}", headers=auth_headers(token))
+    assert again.json()["status"] == "awaiting_deposit"
+    assert again.json()["deposit"]["address"] == addr.json()["address"]
+    assert "BTC" not in addr.json()["assets"]
+
+
+def test_no_withdraw_route(client: TestClient) -> None:
+    token = login(client, "client@desk.local", "client-local")
+    response = client.post(
+        "/v1/withdrawals",
+        json={"asset": "USDC", "amount": "1.00"},
+        headers=auth_headers(token, f"wd-{uuid4()}"),
+    )
+    assert response.status_code == 404
+
+
 def test_tokens_mark_btc_unavailable(client: TestClient) -> None:
     response = client.get("/v1/tokens")
     assert response.status_code == 200
@@ -147,8 +191,6 @@ def test_never_order_junk_btc_at_50() -> None:
 
 
 def test_cloid_formula() -> None:
-    from uuid import UUID
-
     trade_id = UUID("123e4567-e89b-12d3-a456-426614174000")
     import hashlib
 

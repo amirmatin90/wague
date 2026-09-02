@@ -202,7 +202,7 @@ export function Swap() {
     setBusy(true);
     setError("");
     try {
-      const next = await simulateDeposit(session.access_token, trade.trade_id, `sim-${crypto.randomUUID()}`);
+      const next = await simulateDeposit(session.access_token, trade.trade_id, `sim:${crypto.randomUUID()}`);
       setTrade(next.trade);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Simulate deposit failed");
@@ -248,7 +248,7 @@ export function Swap() {
       row.name.toLowerCase().includes(search.toLowerCase()),
   );
   const needsDeposit = trade?.status === "awaiting_deposit";
-  const address = trade?.deposit?.address || depositAddress;
+  const address = depositAddress;
   const shownStatus = trade ? displayStatus(trade.status) : "";
 
   return (
