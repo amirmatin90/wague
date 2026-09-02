@@ -24,16 +24,17 @@ function usdLabel(value?: string) {
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
-function formatPay(amount: string, asset: string) {
-  const n = Number(amount);
-  if (!amount || Number.isNaN(n)) return `${amount} ${asset}`.trim();
-  return `${n.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${asset}`;
-}
-
 function displayStatus(status: string) {
-  if (status === "swapping" || status === "settling") return "filling";
+  if (status === "swapping" || status === "settling" || status === "hedging") return "filling";
   if (status === "awaiting_deposit") return "accepted";
   return status;
+}
+
+function inFlight(status?: string) {
+  return Boolean(
+    status &&
+      ["accepted", "awaiting_deposit", "reserved", "swapping", "settling", "filling"].includes(status),
+  );
 }
 
 export function Swap() {
@@ -49,7 +50,6 @@ export function Swap() {
   const [quoting, setQuoting] = useState(false);
   const [picker, setPicker] = useState<"pay" | "receive" | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [email, setEmail] = useState("client@desk.local");
   const [password, setPassword] = useState("client-local");
   const [balances, setBalances] = useState<{ asset: string; available: string }[]>([]);
@@ -64,6 +64,12 @@ export function Swap() {
       .then((data) => setTokens(data.tokens))
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!session || !amount || inFlight(trade?.status)) return;
+    const handle = window.setTimeout(() => fetchQuote(amount), 280);
+    return () => window.clearTimeout(handle);
+  }, [session, amount, payAsset, receiveAsset]);
 
   useEffect(() => {
     if (!session) return;
@@ -99,21 +105,18 @@ export function Swap() {
 
   const cta = useMemo(() => {
     if (!session) return "Sign in to swap";
-    if (busy && !liveQuote) return "Fetching quote";
+    if (trade?.status === "failed" || trade?.status === "settled") return "Start a new swap";
     if (quoting) return "Fetching quote";
-    if (trade?.status === "settled") return "Swap complete";
-    if (trade?.status === "failed") return "Start a new swap";
-    if (liveQuote) return `Swap ${formatPay(liveQuote.pay_qty, liveQuote.pay_asset)}`;
+    if (liveQuote) return `Swap ${liveQuote.pay_qty} ${liveQuote.pay_asset}`;
     if (!amount) return "Enter an amount";
-    return "Get quote";
-  }, [busy, liveQuote, quoting, trade, amount, session]);
+    return "Fetching quote";
+  }, [quoting, liveQuote, trade, amount, session]);
 
   function resetQuote() {
     quoteSeq.current += 1;
     setQuote(null);
     setTrade(null);
     setError("");
-    setConfirmOpen(false);
     executeLock.current = false;
   }
 
@@ -177,15 +180,14 @@ export function Swap() {
       await fetchQuote();
       return;
     }
+    if (inFlight(trade?.status) || trade?.status === "settled") return;
     if (executeLock.current) return;
-    setConfirmOpen(true);
     executeLock.current = true;
     setBusy(true);
     setError("");
     try {
       const next = await acceptQuote(session.access_token, liveQuote.quote_id);
       setTrade(next);
-      setConfirmOpen(false);
     } catch (err) {
       executeLock.current = false;
       setError(err instanceof ApiError ? err.message : "Swap failed");
@@ -238,7 +240,7 @@ export function Swap() {
     }
   }
 
-  const receiveDisplay = liveQuote ? liveQuote.receive_qty : "";
+  const receiveDisplay = quoting ? "" : liveQuote?.receive_qty ?? "";
   const visibleTokens = tokens.filter(
     (row) =>
       !search ||
@@ -286,10 +288,14 @@ export function Swap() {
                 placeholder="0"
                 value={amount}
                 onChange={(event) => {
+                  if (inFlight(trade?.status)) return;
                   setAmount(event.target.value);
                   resetQuote();
                 }}
-                onBlur={() => fetchQuote()}
+                onBlur={() => {
+                  if (!inFlight(trade?.status)) fetchQuote();
+                }}
+                disabled={inFlight(trade?.status)}
               />
               <button className="chip" onClick={() => setPicker("pay")}>
                 <span className={`token-dot ${payAsset}`}>{payAsset[0]}</span>
@@ -297,9 +303,9 @@ export function Swap() {
                 <span>▾</span>
               </button>
             </div>
-            <div className="usd">{liveQuote ? usdLabel(liveQuote.pay_usd) : quoting ? " " : "$0"}</div>
+            <div className="usd">{liveQuote ? usdLabel(liveQuote.pay_usd) : ""}</div>
           </div>
-          <button className="flip" onClick={flip} aria-label="Flip assets">
+          <button className="flip" onClick={flip} aria-label="Flip assets" disabled={inFlight(trade?.status)}>
             ↕
           </button>
           <div className="leg dim">
@@ -308,7 +314,7 @@ export function Swap() {
               {quoting ? (
                 <div className="amount skeleton" aria-hidden="true" />
               ) : (
-                <div className="amount">{receiveDisplay || "0"}</div>
+                <div className={`amount ${receiveDisplay ? "" : "placeholder"}`}>{receiveDisplay || ""}</div>
               )}
               <button className="chip" onClick={() => setPicker("receive")}>
                 <span className={`token-dot ${receiveAsset}`}>{receiveAsset[0]}</span>
@@ -318,24 +324,24 @@ export function Swap() {
             </div>
             <div className="usd">{liveQuote && !quoting ? usdLabel(liveQuote.receive_usd) : ""}</div>
           </div>
-          {liveQuote ? (
+          {liveQuote && !trade ? (
             <div className="rate-row">
-              <span>All-in fee</span>
-              <span>{liveQuote.fee_amount} USDC</span>
+              <span>Fee</span>
+              <span>{liveQuote.fee_amount}</span>
             </div>
           ) : null}
-          <button className="cta" disabled={busy || quoting || !amount} onClick={commitSwap}>
-            {cta}
-          </button>
-          {confirmOpen && liveQuote && !trade ? (
-            <div className="confirm">
-              Confirm {formatPay(liveQuote.pay_qty, liveQuote.pay_asset)} for {liveQuote.receive_qty}{" "}
-              {liveQuote.receive_asset}. Fee {liveQuote.fee_amount} USDC from the locked quote.
-            </div>
+          {!inFlight(trade?.status) ? (
+            <button
+              className="cta"
+              disabled={busy || quoting || (!amount && trade?.status !== "failed" && trade?.status !== "settled")}
+              onClick={commitSwap}
+            >
+              {cta}
+            </button>
           ) : null}
           {error ? <div className="banner">{error}</div> : null}
 
-          {trade && !needsDeposit ? (
+          {trade ? (
             <div className="status-box">
               <div className="status-row">
                 <span>Status</span>
@@ -348,12 +354,7 @@ export function Swap() {
                   </span>
                 ))}
               </div>
-              {trade.error_message ? <div className="banner">{trade.error_message}</div> : null}
-              {trade.status === "failed" ? (
-                <button className="ghost-btn" onClick={resetQuote}>
-                  Start a new swap
-                </button>
-              ) : null}
+              {trade.error_message && !needsDeposit ? <div className="banner">{trade.error_message}</div> : null}
             </div>
           ) : null}
 
@@ -378,7 +379,7 @@ export function Swap() {
                 <span>Status</span>
                 <b>{trade.deposit?.status || trade.status}</b>
               </div>
-              <button className="cta secondary" disabled={busy} onClick={onSimulate}>
+              <button className="cta secondary" disabled={busy || trade.deposit?.status === "credited"} onClick={onSimulate}>
                 Simulate deposit
               </button>
               {trade.error_message ? <div className="banner">{trade.error_message}</div> : null}

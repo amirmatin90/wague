@@ -143,6 +143,10 @@ button {
   color: var(--ink);
 }
 
+.amount.placeholder {
+  min-height: 2.15rem;
+}
+
 .amount.skeleton {
   height: 2.15rem;
   border-radius: 10px;
