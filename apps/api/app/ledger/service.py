@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import ApiError
 from app.models import LedgerAccount, LedgerEntry, LedgerTxn
+from app.money import BASE_QUANT, USDC_QUANT, dec_str
 
 DESK_PARTY_ID = UUID("00000000-0000-0000-0000-000000000001")
 ASSETS = ("BTC", "ETH", "USDC")
@@ -194,8 +195,8 @@ def client_balances(session: Session, user_id: UUID) -> list[dict]:
     return [
         {
             "asset": asset,
-            "available": format(by_asset[asset]["available"], "f"),
-            "reserved": format(by_asset[asset]["reserved"], "f"),
+            "available": dec_str(by_asset[asset]["available"].quantize(USDC_QUANT if asset == "USDC" else BASE_QUANT)),
+            "reserved": dec_str(by_asset[asset]["reserved"].quantize(USDC_QUANT if asset == "USDC" else BASE_QUANT)),
         }
         for asset in ASSETS
         if asset in by_asset
@@ -210,5 +211,11 @@ def desk_positions(session: Session) -> list[dict]:
             LedgerAccount.kind == "available",
         )
     ).all()
-    return [{"asset": row.asset, "qty": format(Decimal(row.balance), "f")} for row in rows]
+    return [
+        {
+            "asset": row.asset,
+            "qty": dec_str(Decimal(row.balance).quantize(USDC_QUANT if row.asset == "USDC" else BASE_QUANT)),
+        }
+        for row in rows
+    ]
 

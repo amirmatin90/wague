@@ -29,6 +29,7 @@ def add_stage(session: Session, trade: Trade, name: str) -> None:
     session.add(TradeStage(trade_id=trade.id, name=name))
     trade.status = name
     trade.updated_at = session.scalar(select(func.now()))
+    session.flush()
 
 
 def stages_for(session: Session, trade_id: UUID) -> list[TradeStage]:
