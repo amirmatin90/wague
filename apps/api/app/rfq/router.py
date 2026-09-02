@@ -13,55 +13,41 @@ from sqlalchemy.orm import Session
 
 from app.audit.service import write_audit
 from app.config import get_settings
-from app.deps import DbSession, Idempotency, require_idempotency, require_roles
+from app.deps import CurrentUser, DbSession, Idempotency, require_idempotency, require_roles
 from app.errors import ApiError
 from app.models import Quote, Rfq, User
 from app.money import parse_decimal
-from app.pricing.engine import price_rfq
-from app.realtime.hub import hub
-from app.risk.engine import check_balances, validate_rfq
+from app.pricing.engine import price_swap
 from app.schemas import quote_public
 from app.trade.service import assert_desk_open
 
-router = APIRouter(tags=["rfq"])
+router = APIRouter(tags=["swap"])
 
 
-class RfqRequest(BaseModel):
+class SwapQuoteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    side: Literal["buy", "sell"]
-    base: Literal["BTC", "ETH"]
-    quote: Literal["USDC"]
-    base_qty: Decimal
+    pay_asset: Literal["ETH", "USDC", "BTC"]
+    receive_asset: Literal["ETH", "USDC", "BTC"]
+    pay_qty: Decimal
 
-    @field_validator("base_qty", mode="before")
+    @field_validator("pay_qty", mode="before")
     @classmethod
     def qty_as_decimal_string(cls, value: object) -> Decimal:
-        return parse_decimal(value, field="base_qty")
+        return parse_decimal(value, field="pay_qty")
 
 
-def _create_rfq(session: Session, user: User, payload: RfqRequest) -> dict:
+def _create_quote(session: Session, user: User, payload: SwapQuoteRequest) -> dict:
     assert_desk_open(session)
-    qty = validate_rfq(payload.side, payload.base, payload.quote, payload.base_qty)
-    priced = price_rfq(payload.side, payload.base, payload.quote, qty)
-    check_balances(
-        session,
-        user_id=user.id,
-        side=payload.side,
-        base=payload.base,
-        quote=payload.quote,
-        base_qty=qty,
-        quote_qty=priced["quote_qty"],
-        fee_amount=priced["fee_amount"],
-    )
+    priced = price_swap(payload.pay_asset, payload.receive_asset, payload.pay_qty)
     now = session.scalar(select(func.now()))
     ttl_ms = get_settings().quote_ttl_ms
     rfq = Rfq(
         user_id=user.id,
-        side=payload.side,
-        base=payload.base,
-        quote_asset=payload.quote,
-        base_qty=qty,
+        side=priced["side"],
+        base=priced["base"],
+        quote_asset=priced["quote"],
+        base_qty=priced["base_qty"],
         status="quoted",
     )
     session.add(rfq)
@@ -69,10 +55,10 @@ def _create_rfq(session: Session, user: User, payload: RfqRequest) -> dict:
     quote = Quote(
         rfq_id=rfq.id,
         user_id=user.id,
-        side=payload.side,
-        base=payload.base,
-        quote_asset=payload.quote,
-        base_qty=qty,
+        side=priced["side"],
+        base=priced["base"],
+        quote_asset=priced["quote"],
+        base_qty=priced["base_qty"],
         quote_qty=priced["quote_qty"],
         price=priced["price"],
         fee_amount=priced["fee_amount"],
@@ -86,36 +72,43 @@ def _create_rfq(session: Session, user: User, payload: RfqRequest) -> dict:
     write_audit(
         session,
         user.id,
-        "rfq.create",
+        "quote.create",
         "quote",
         str(quote.id),
-        {"side": payload.side, "base": payload.base, "quote": payload.quote},
+        {"pay_asset": payload.pay_asset, "receive_asset": payload.receive_asset},
     )
-    body = quote_public(quote)
-    hub.publish({"type": "quote.created", **body}, user_id=user.id, admin=True)
-    return body
+    return quote_public(quote, priced)
 
 
-@router.post("/v1/rfqs")
-def create_rfq(
-    payload: RfqRequest,
+@router.post("/v1/quotes")
+def create_quote(
+    payload: SwapQuoteRequest,
     session: DbSession,
     user: Annotated[User, Depends(require_roles("client"))],
     idem: Annotated[Idempotency, Depends(require_idempotency)],
 ):
     if idem.cached is not None:
         return JSONResponse(idem.cached, status_code=idem.cached_status or 200)
-    body = _create_rfq(session, user, payload)
+    body = _create_quote(session, user, payload)
     idem.store(200, body)
     return body
 
 
+@router.get("/v1/quotes/{quote_id}")
+def read_quote(quote_id: UUID, session: DbSession, user: CurrentUser) -> dict:
+    quote = session.get(Quote, quote_id)
+    if quote is None:
+        raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found")
+    if user.role == "client" and quote.user_id != user.id:
+        raise ApiError(404, "QUOTE_NOT_FOUND", "Quote not found")
+    now = session.scalar(select(func.now()))
+    if quote.status == "quoted" and quote.expires_at <= now:
+        quote.status = "expired"
+    return quote_public(quote)
+
+
 @router.get("/v1/rfqs/{rfq_id}")
-def read_rfq(
-    rfq_id: UUID,
-    session: DbSession,
-    user: Annotated[User, Depends(require_roles("client", "ops", "cto"))],
-) -> dict:
+def read_rfq(rfq_id: UUID, session: DbSession, user: CurrentUser) -> dict:
     rfq = session.get(Rfq, rfq_id)
     if rfq is None:
         raise ApiError(404, "RFQ_NOT_FOUND", "RFQ not found")
@@ -123,8 +116,21 @@ def read_rfq(
         raise ApiError(404, "RFQ_NOT_FOUND", "RFQ not found")
     quote = session.scalar(select(Quote).where(Quote.rfq_id == rfq.id))
     if quote is None:
-        raise ApiError(404, "QUOTE_NOT_FOUND", "No quote for this RFQ")
-    now = session.scalar(select(func.now()))
-    if quote.status == "quoted" and quote.expires_at <= now:
-        quote.status = "expired"
+        raise ApiError(404, "QUOTE_NOT_FOUND", "No quote for this request")
     return quote_public(quote)
+
+
+@router.get("/v1/tokens")
+def list_tokens() -> dict:
+    return {
+        "tokens": [
+            {"asset": "ETH", "name": "Ethereum", "available": True, "hl": "UETH"},
+            {"asset": "USDC", "name": "USD Coin", "available": True, "hl": "USDC"},
+            {
+                "asset": "BTC",
+                "name": "Bitcoin",
+                "available": False,
+                "reason": "Unavailable on Hyperliquid testnet (no UBTC)",
+            },
+        ]
+    }

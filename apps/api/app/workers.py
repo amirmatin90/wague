@@ -2,51 +2,65 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.hyperliquid.stub import get_hyperliquid
-from app.ledger.service import settle_trade
+from app.errors import ApiError
+from app.hyperliquid.client import place_spot_ioc
+from app.ledger.service import pay_need, release_reserve, settle_from_fill
 from app.models import Trade
 from app.realtime.hub import hub
 from app.recon.service import reconcile
-from app.schemas import trade_public
-from app.trade.service import add_stage, stages_for
+from app.trade.service import add_stage, _trade_body
 
 log = logging.getLogger("wague.workers")
 _stop = threading.Event()
 
-ACTIVE = ("reserved", "hedging", "filling", "reconciling", "settling")
+ACTIVE = ("reserved", "swapping", "settling")
+
+
+def _fail(session, trade: Trade, message: str) -> None:
+    asset, amount = pay_need(trade.side, trade.base_qty, trade.quote_qty, trade.fee_amount)
+    if trade.status in {"reserved", "swapping"}:
+        try:
+            release_reserve(
+                session,
+                user_id=trade.user_id,
+                asset=asset,
+                amount=amount,
+                trade_id=trade.id,
+            )
+        except Exception:
+            log.exception("failed to release reserve after IOC error")
+    trade.error_message = message
+    add_stage(session, trade, "failed")
 
 
 def _advance(session, trade: Trade) -> None:
-    venue = get_hyperliquid()
     if trade.status == "reserved":
-        add_stage(session, trade, "hedging")
+        add_stage(session, trade, "swapping")
         return
-    if trade.status == "hedging":
-        fill = venue.hedge(
-            cloid=trade.cloid,
-            side="sell" if trade.side == "buy" else "buy",
-            base=trade.base,
-            qty=trade.base_qty,
-            price=trade.price,
-        )
+    if trade.status == "swapping":
+        try:
+            fill = place_spot_ioc(
+                trade_id=trade.id,
+                is_buy=trade.side == "buy",
+                qty=trade.base_qty,
+                limit_px=trade.price,
+            )
+        except ApiError as exc:
+            _fail(session, trade, exc.message)
+            return
+        if fill.filled_qty < trade.base_qty:
+            _fail(session, trade, "IOC did not fill the honored size; no stub fill is applied")
+            return
         trade.hedge_filled_qty = fill.filled_qty
         trade.hedge_avg_price = fill.avg_price
-        add_stage(session, trade, "filling")
-        return
-    if trade.status == "filling":
-        add_stage(session, trade, "reconciling")
-        return
-    if trade.status == "reconciling":
-        reconcile(session, trade)
         add_stage(session, trade, "settling")
         return
     if trade.status == "settling":
-        settle_trade(
+        settle_from_fill(
             session,
             user_id=trade.user_id,
             side=trade.side,
@@ -55,8 +69,10 @@ def _advance(session, trade: Trade) -> None:
             base_qty=trade.base_qty,
             quote_qty=trade.quote_qty,
             fee_amount=trade.fee_amount,
+            filled_qty=trade.hedge_filled_qty or trade.base_qty,
             trade_id=trade.id,
         )
+        reconcile(session, trade)
         add_stage(session, trade, "settled")
 
 
@@ -76,9 +92,9 @@ def advance_one() -> bool:
         _advance(session, trade)
         session.commit()
         session.refresh(trade)
-        body = trade_public(trade, stages_for(session, trade.id))
+        body = _trade_body(session, trade)
         hub.publish({"type": "trade.updated", **body}, user_id=trade.user_id, admin=True)
-        if trade.status == "settled":
+        if trade.status in {"settled", "failed"}:
             hub.publish({"type": "balances.changed"}, user_id=trade.user_id, admin=True)
         return True
     except Exception:

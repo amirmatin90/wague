@@ -1,30 +1,37 @@
-# WAGUE OTC Desk
+# WAGUE
 
-Local institutional RFQ desk. This is not a retail swap. Quotes are firm for a TTL; accept does not reprice (no last look). The Hyperliquid venue is a stub that always fills immediately.
+Public swap page inspired by the Wagyu layout (centered card, amount-first type, asset chips, token picker). This repo is **WAGUE**. It does not use the Wagyu name, mascot, points, or leaderboard.
 
-The previous repository README was empty and is replaced by this project document.
+Home is `/` — a swap card. Quotes come from the live Hyperliquid **testnet** book. After you accept a firm quote, you deposit the pay asset. The ledger credits only after confirmation. Then the API places a real Hyperliquid testnet spot **IOC** with the official `hyperliquid-python-sdk`. Fill is settlement. There is no stub fill on this path.
 
-## What you get
+Only **ETH/USDC** (UETH) is live. BTC is listed in the picker as unavailable because testnet has no UBTC.
 
-- Modular Python 3.12 FastAPI monolith: identity, rfq, pricing, risk, trade, hyperliquid (stub only), ledger, recon, audit, admin, realtime
-- PostgreSQL 16 as the only system of record and the only honor path (no Redis, no Kafka)
-- TypeScript React portal: client RFQ desk and a thin ops/cto admin
-- Docker Compose: `api`, `web`, `postgres`
-
-Money is `NUMERIC` in Postgres. API sizes and prices are decimal strings. Floats are not used on the ledger or in persisted prices.
-
-## Run locally
+## Run
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-- API: `http://127.0.0.1:8080` (published as `127.0.0.1:8080:8080`, process binds `0.0.0.0:8080`)
-- Portal: `http://127.0.0.1:8472`
-- `GET /healthz` and `GET /readyz`
+- Swap UI: [http://127.0.0.1:8472/](http://127.0.0.1:8472/)
+- API: `http://127.0.0.1:8080` (published `127.0.0.1:8080:8080`)
 
-Definition of done path: sign in as the client → New RFQ for BTC/USDC → accept the firm quote on the confirm step → ticket moves accepted → reserved → hedging → filling → reconciling → settling → settled.
+## Hyperliquid testnet
+
+`.env.example` sets `HL_NETWORK=testnet` and `HL_API_URL=https://api.hyperliquid-testnet.xyz`.
+
+Quotes use the public `/info` book. No key is required for that.
+
+To **execute**, export a testnet agent private key and restart compose:
+
+```bash
+export HL_AGENT_KEY_TESTNET=0x...
+docker compose up --build
+```
+
+Never commit that key. The API refuses to start if `HL_MASTER_KEY`, `HL_WITHDRAW_KEY`, `HL_AGENT_KEY_MAINNET`, or a mainnet host is present.
+
+If the key is missing, the UI still quotes. Execute returns `set HL_AGENT_KEY_TESTNET`.
 
 ## Seed users
 
@@ -34,44 +41,21 @@ Definition of done path: sign in as the client → New RFQ for BTC/USDC → acce
 | `ops@desk.local` | `ops-local` | ops |
 | `cto@desk.local` | `cto-local` | cto |
 
-The client is prefunded in BTC, ETH, and USDC. Desk inventory is seeded so the stub book can settle.
+Use **Account** on `/` to sign in as the client.
 
-## Local stub rules
+## Demo deposit (no chain)
 
-`.env.example` sets `HL_NETWORK=stub` only. The API refuses to start if:
+After Swap, the card shows a deposit address and amount (`waiting → confirmed → swapping → done`).
 
-- `HL_NETWORK` is anything other than `stub`
-- `HL_AGENT_KEY`, `HL_MASTER_KEY`, or `WALLET_HOT_SEED_MAINNET` is set
+For local demo, `POST /v1/deposits/simulate` (Idempotency-Key required) credits the ledger with a synthetic `chain_tx_id`. The UI button is labeled **Simulate deposit (local)**. Real path is: watch chain → credit → then IOC.
 
-Do not commit secrets. There is no Kubernetes, CI/CD, extra microservice, or real Hyperliquid key in this repo.
+Withdraw is out of scope.
 
-## Quote honor
+## Honor / money
 
-Accept runs in a single Postgres transaction:
+Postgres is the system of record. Amounts are decimal strings. Accept honors the locked quote (no last look) in one transaction: `SELECT quotes FOR UPDATE` and only if `quoted` and not expired and the kill switch is not engaged. Idempotency-Key is required on mutating POSTs.
 
-1. `SELECT quotes … FOR UPDATE`
-2. Honor only if `status = quoted` AND `expires_at > now` AND the kill-switch row exists with `engaged = false`
-3. A missing kill-switch row is treated as halted
-4. Engaging the kill switch returns `423` on new RFQs
-
-Hedge `cloid` is `0x` + first 16 bytes of `sha256(b'otc-hedge-v1|' + canonical uuid trade_id)` hex. It is unique on `trades.cloid` and is never included in client or admin JSON.
-
-## HTTP API
-
-Mutating POSTs (RFQ, accept, kill switch) require `Idempotency-Key`.
-
-- `POST /v1/auth/login`
-- `POST /v1/rfqs` body `{side, base, quote, base_qty}` → firm quote or `422 {code, message}` or `423` kill switch
-- `GET /v1/rfqs/:id`
-- `POST /v1/quotes/:id/accept`
-- `GET /v1/trades/:id`
-- `GET /v1/balances`
-- `GET /v1/stream` (SSE)
-- `GET /v1/admin/trades`, `/positions`, `/recon`
-- `POST /v1/admin/kill-switch`
-- `GET /healthz`, `GET /readyz`
-
-Quoted pairs: BTC/USDC and ETH/USDC. Stub mids: BTC `97500`, ETH `3520`.
+`cloid = 0x + sha256(b"otc-hedge-v1|" + canonical trade uuid)[:16] hex`. It never appears in client JSON.
 
 ## Tests
 
@@ -79,13 +63,4 @@ Quoted pairs: BTC/USDC and ETH/USDC. Stub mids: BTC `97500`, ETH `3520`.
 docker compose exec api pytest -q
 ```
 
-Covered: expired quote is not honored, kill switch blocks new quotes, accept is idempotent.
-
-## Layout
-
-```
-apps/api     FastAPI monolith, Alembic, in-process workers
-apps/web     Vite + React portal
-compose.yml  api, web, postgres
-.env.example HL_NETWORK=stub only
-```
+Expired quote is not honored, kill switch blocks new quotes, accept is idempotent.

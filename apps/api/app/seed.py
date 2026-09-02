@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.identity.service import hash_password
-from app.ledger.service import ASSETS, DESK_PARTY_ID, ensure_account
+from app.ledger.service import ASSETS, CHAIN_PARTY_ID, DESK_PARTY_ID, ensure_account
 from app.models import KillSwitch, User
 
 SEED_USERS = (
@@ -16,9 +16,9 @@ SEED_USERS = (
 )
 
 CLIENT_PREFUND = {
-    "BTC": Decimal("10.00000000"),
-    "ETH": Decimal("50.00000000"),
-    "USDC": Decimal("2000000.00"),
+    "BTC": Decimal("0"),
+    "ETH": Decimal("0"),
+    "USDC": Decimal("0"),
 }
 
 DESK_PREFUND = {
@@ -51,6 +51,7 @@ def seed() -> None:
             ensure_account(session, "client", client.id, asset, "reserved", Decimal("0"))
             ensure_account(session, "desk", DESK_PARTY_ID, asset, "available", DESK_PREFUND[asset])
             ensure_account(session, "desk", DESK_PARTY_ID, asset, "reserved", Decimal("0"))
+            ensure_account(session, "chain", CHAIN_PARTY_ID, asset, "available", Decimal("0"))
 
         session.commit()
     except Exception:
