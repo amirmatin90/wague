@@ -103,7 +103,12 @@ def test_idempotent_accept(client: TestClient) -> None:
         headers=auth_headers(token, f"quote-idemp-{uuid4()}"),
     )
     assert quoted.status_code == 200, quoted.text
-    quote_id = quoted.json()["quote_id"]
+    body = quoted.json()
+    assert isinstance(body["fee_amount"], str)
+    assert isinstance(body["price"], str)
+    assert isinstance(body["pay_qty"], str)
+    assert "cloid" not in body
+    quote_id = body["quote_id"]
     key = f"accept-{uuid4()}"
     first = client.post(f"/v1/quotes/{quote_id}/accept", headers=auth_headers(token, key))
     assert first.status_code == 200, first.text

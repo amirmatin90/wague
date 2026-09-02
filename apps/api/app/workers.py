@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.errors import ApiError
 from app.hyperliquid.client import aggressive_limit, l2_book, place_spot_ioc
-from app.ledger.service import pay_need, release_reserve, settle_from_fill
+from app.ledger.service import get_account, pay_need, release_reserve, settle_from_fill
 from app.models import Trade
 from app.realtime.hub import hub
 from app.recon.service import reconcile
@@ -42,6 +42,11 @@ def _advance(session, trade: Trade) -> None:
         add_stage(session, trade, "swapping")
         return
     if trade.status == "swapping":
+        asset, amount = pay_need(trade.side, trade.base_qty, trade.quote_qty, trade.fee_amount)
+        reserved = get_account(session, "client", trade.user_id, asset, "reserved", for_update=True)
+        if reserved is None or reserved.balance < amount:
+            _fail(session, trade, "Pay asset is not reserved on the ledger; IOC is not sent")
+            return
         try:
             book = l2_book()
             fill = place_spot_ioc(

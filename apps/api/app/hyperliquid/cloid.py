@@ -5,6 +5,6 @@ from uuid import UUID
 
 
 def hedge_cloid(trade_id: UUID) -> str:
-    canonical = str(trade_id).encode("ascii")
+    canonical = str(trade_id).encode("utf-8")
     digest = hashlib.sha256(b"otc-hedge-v1|" + canonical).digest()
     return "0x" + digest[:16].hex()

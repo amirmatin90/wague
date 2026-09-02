@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.deposit.service import deposit_address
-from app.hyperliquid.client import _parse_ioc, resolve_spot_market
+from app.hyperliquid.client import _parse_ioc, assert_executable_spot, resolve_spot_market, SpotMarket
+from app.hyperliquid.cloid import hedge_cloid
+from app.errors import ApiError
+from app.workers import ACTIVE
 from app.identity.service import hash_password
 from app.ledger.service import credit_deposit, ensure_account
 from app.models import User
@@ -123,14 +126,53 @@ def test_spot_meta_resolves_ueth_index() -> None:
             {"name": "JUNK", "index": 50},
         ],
         "universe": [
-            {"name": "@0", "tokens": [50, 0]},
-            {"name": "@7", "tokens": [4, 0]},
+            {"name": "@50", "index": 50, "tokens": [50, 0]},
+            {"name": "@7", "index": 7, "tokens": [4, 0]},
         ],
     }
     market = resolve_spot_market(meta)
     assert market.coin == "@7"
     assert market.asset == 10007
+    assert market.universe_index == 7
     assert market.base_token == "UETH"
+
+
+def test_never_order_junk_btc_at_50() -> None:
+    try:
+        assert_executable_spot(SpotMarket(coin="@50", asset=10050, universe_index=50, base_token="UBTC"))
+    except ApiError as exc:
+        assert exc.code == "HL_PAIR"
+    else:
+        raise AssertionError("junk BTC @50 must be refused")
+
+
+def test_cloid_formula() -> None:
+    from uuid import UUID
+
+    trade_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+    import hashlib
+
+    expected = "0x" + hashlib.sha256(b"otc-hedge-v1|" + str(trade_id).encode("utf-8")).digest()[:16].hex()
+    assert hedge_cloid(trade_id) == expected
+    assert hedge_cloid(trade_id).startswith("0x")
+    assert len(hedge_cloid(trade_id)) == 34
+
+
+def test_http_200_parses_statuses_zero() -> None:
+    fill = _parse_ioc(
+        {
+            "status": "ok",
+            "response": {"data": {"statuses": [{"filled": {"totalSz": "0.1", "avgPx": "3501.25"}}]}},
+        }
+    )
+    assert fill.filled_qty == Decimal("0.1")
+    assert fill.avg_price == Decimal("3501.25")
+    assert fill.status == "filled"
+
+
+def test_worker_does_not_execute_unreserved() -> None:
+    assert "awaiting_deposit" not in ACTIVE
+    assert "accepted" not in ACTIVE
 
 
 def test_ioc_resting_is_failure() -> None:

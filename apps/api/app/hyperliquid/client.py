@@ -108,13 +108,15 @@ def resolve_spot_market(meta: dict | None = None) -> SpotMarket:
     for index, row in enumerate(meta["universe"]):
         if set(row["tokens"]) != wanted:
             continue
-        name = str(row.get("name") or "")
-        if name.startswith("@") and name[1:].isdigit():
-            universe_index = int(name[1:])
+        if "index" in row:
+            universe_index = int(row["index"])
         else:
-            universe_index = index
+            name = str(row.get("name") or "")
+            universe_index = int(name[1:]) if name.startswith("@") and name[1:].isdigit() else index
+        official = str(row.get("name") or f"@{universe_index}")
+        coin = official if official.startswith("@") else f"@{universe_index}"
         market = SpotMarket(
-            coin=f"@{universe_index}",
+            coin=coin,
             asset=10000 + universe_index,
             universe_index=universe_index,
         )
@@ -177,6 +179,15 @@ def l2_book(coin: str | None = None) -> Book:
     return Book(coin=name, bids=bids, asks=asks, mid=mid)
 
 
+def assert_executable_spot(market: SpotMarket) -> None:
+    if market.base_token != HL_BASE or market.quote_token != HL_QUOTE:
+        raise ApiError(500, "HL_PAIR", "Refusing to order a market that is not UETH/USDC")
+    if "BTC" in market.coin.upper() or market.base_token == "UBTC":
+        raise ApiError(500, "HL_PAIR", "Refusing to order BTC; testnet has no UBTC")
+    if not market.coin.startswith("@") or market.asset != 10000 + market.universe_index:
+        raise ApiError(500, "HL_PAIR", "Spot coin must be @{universe_index} with asset 10000+index")
+
+
 def aggressive_limit(mid: Decimal, is_buy: bool) -> Decimal:
     adj = AGGRESSIVE_BPS / Decimal("10000")
     raw = mid * (Decimal("1") + adj) if is_buy else mid * (Decimal("1") - adj)
@@ -202,12 +213,11 @@ def place_spot_ioc(
     from hyperliquid.utils.types import Cloid
 
     market = spot_market()
-    if not market.coin.startswith("@") or market.asset < 10000:
-        raise ApiError(500, "HL_PAIR", "Refusing to order a non-spot UETH/USDC market")
+    assert_executable_spot(market)
     book = l2_book(market.coin)
     px = limit_px if limit_px is not None else aggressive_limit(book.mid, is_buy)
     wallet = Account.from_key(key)
-    exchange = Exchange(wallet, api_url())
+    exchange = Exchange(wallet, api_url(), timeout=8.0)
     cloid = Cloid.from_str(hedge_cloid(trade_id))
     try:
         raw: dict[str, Any] = exchange.order(
