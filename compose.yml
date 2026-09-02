@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: otc
+      POSTGRES_PASSWORD: otc_local
+      POSTGRES_DB: otc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U otc -d otc"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ./apps/api
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DATABASE_URL: postgresql+psycopg://otc:otc_local@postgres:5432/otc
+      HL_NETWORK: stub
+      JWT_SECRET: local-dev-jwt-not-for-production
+      QUOTE_TTL_MS: "20000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+    ports:
+      - "127.0.0.1:8472:8472"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
