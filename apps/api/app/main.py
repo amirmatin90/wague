@@ -9,9 +9,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.admin.router import router as admin_router
-from app.config import assert_local_stub, get_settings
+from app.config import assert_testnet, get_settings
+from app.deposit.router import router as deposit_router
 from app.db import SessionLocal
 from app.errors import ApiError, api_error_handler
+from app.hyperliquid.client import warm_spot_market
 from app.identity.router import router as identity_router
 from app.realtime.router import router as realtime_router
 from app.rfq.router import router as rfq_router
@@ -23,13 +25,14 @@ from app.workers import start_workers
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    assert_local_stub()
+    assert_testnet()
+    warm_spot_market()
     seed()
     start_workers()
     yield
 
 
-app = FastAPI(title="WAGUE OTC Desk", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="WAGUE", version="0.2.0", lifespan=lifespan)
 app.add_exception_handler(ApiError, api_error_handler)
 
 
@@ -53,6 +56,7 @@ app.add_middleware(
 app.include_router(identity_router)
 app.include_router(rfq_router)
 app.include_router(trade_router)
+app.include_router(deposit_router)
 app.include_router(admin_router)
 app.include_router(realtime_router)
 
@@ -71,7 +75,7 @@ def healthz() -> dict:
 @app.get("/readyz")
 def readyz():
     settings = get_settings()
-    if settings.hl_network != "stub":
+    if settings.hl_network != "testnet":
         return JSONResponse({"status": "not_ready", "reason": "hl_network"}, status_code=503)
     session = SessionLocal()
     try:
@@ -89,7 +93,7 @@ def readyz():
 def run() -> None:
     import uvicorn
 
-    assert_local_stub()
+    assert_testnet()
     uvicorn.run("app.main:app", host="0.0.0.0", port=8080, log_level="info")
 
 
