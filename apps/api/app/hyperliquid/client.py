@@ -57,14 +57,23 @@ def ws_url() -> str:
 def _info():
     from hyperliquid.info import Info
 
-    return Info(api_url(), skip_ws=True)
+    return Info(api_url(), skip_ws=True, timeout=8.0)
+
+
+def _hl_call(fn, *args):
+    try:
+        return fn(*args)
+    except ApiError:
+        raise
+    except Exception as exc:
+        raise ApiError(503, "BOOK_UNAVAILABLE", "Live Hyperliquid testnet book is unavailable") from exc
 
 
 def spot_coin() -> str:
     if _test_book is not None:
         return str(_test_book.get("coin") or "UETH/USDC")
-    info = _info()
-    meta = info.spot_meta()
+    info = _hl_call(_info)
+    meta = _hl_call(info.spot_meta)
     tokens = {token["name"]: token["index"] for token in meta["tokens"]}
     if HL_BASE not in tokens or HL_QUOTE not in tokens:
         raise ApiError(503, "BOOK_UNAVAILABLE", "Testnet spot meta does not list UETH/USDC")
@@ -86,6 +95,8 @@ def l2_book(coin: str | None = None) -> Book:
     name = coin or spot_coin()
     try:
         raw = _info().l2_snapshot(name)
+    except ApiError:
+        raise
     except Exception as exc:
         raise ApiError(503, "BOOK_UNAVAILABLE", "Live Hyperliquid testnet book is unavailable") from exc
     levels = raw.get("levels") or []

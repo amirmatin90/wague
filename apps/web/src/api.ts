@@ -125,3 +125,30 @@ export const simulateDeposit = (token: string, tradeId: string) =>
 
 export const getBalances = (token: string) =>
   api<{ balances: { asset: string; available: string; reserved: string }[] }>("/v1/balances", { token });
+
+export type Position = { asset: string; qty: string };
+export type Recon = {
+  recon_id: string;
+  trade_id: string;
+  status: string;
+  client_base_qty: string;
+  hedge_base_qty: string;
+  client_price: string;
+  hedge_price: string;
+  notes: string;
+};
+
+export const adminTrades = (token: string) => api<{ trades: Trade[] }>("/v1/admin/trades", { token });
+export const adminPositions = (token: string) =>
+  api<{ positions: Position[]; kill_switch: { present: boolean; engaged: boolean } }>(
+    "/v1/admin/positions",
+    { token },
+  );
+export const adminRecon = (token: string) => api<{ recon: Recon[] }>("/v1/admin/recon", { token });
+export const setKillSwitch = (token: string, engaged: boolean) =>
+  api<{ engaged: boolean }>("/v1/admin/kill-switch", {
+    method: "POST",
+    token,
+    body: { engaged },
+    idempotent: true,
+  });
