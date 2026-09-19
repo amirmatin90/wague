@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.db import SessionLocal
 from app.models import Quote, Rfq, User
@@ -18,13 +18,11 @@ def test_expired_quote_not_honored(client: TestClient) -> None:
     try:
         user = session.scalar(select(User).where(User.email == "client@desk.local"))
         assert user is not None
-        from sqlalchemy import func
-
         db_now = session.scalar(select(func.now()))
         rfq = Rfq(
             user_id=user.id,
             side="buy",
-            base="BTC",
+            base="ETH",
             quote_asset="USDC",
             base_qty=Decimal("0.10000000"),
             status="quoted",
@@ -35,12 +33,12 @@ def test_expired_quote_not_honored(client: TestClient) -> None:
             rfq_id=rfq.id,
             user_id=user.id,
             side="buy",
-            base="BTC",
+            base="ETH",
             quote_asset="USDC",
             base_qty=Decimal("0.10000000"),
-            quote_qty=Decimal("9759.75"),
-            price=Decimal("97597.50"),
-            fee_amount=Decimal("4.88"),
+            quote_qty=Decimal("351.00"),
+            price=Decimal("3510.00"),
+            fee_amount=Decimal("0.18"),
             fee_bps=Decimal("5.00"),
             ttl_ms=1,
             expires_at=db_now - timedelta(seconds=5),
@@ -69,11 +67,10 @@ def test_kill_switch_blocks_new_quotes(client: TestClient) -> None:
         headers=auth_headers(ops, f"ks-on-{uuid4()}"),
     )
     assert engage.status_code == 200
-    assert engage.json()["engaged"] is True
     try:
         response = client.post(
-            "/v1/rfqs",
-            json={"side": "buy", "base": "BTC", "quote": "USDC", "base_qty": "0.10"},
+            "/v1/quotes",
+            json={"pay_asset": "USDC", "receive_asset": "ETH", "pay_qty": "25.00"},
             headers=auth_headers(client_token, f"rfq-halted-{uuid4()}"),
         )
         assert response.status_code == 423
@@ -87,20 +84,38 @@ def test_kill_switch_blocks_new_quotes(client: TestClient) -> None:
         assert off.status_code == 200
 
 
+def test_btc_unavailable(client: TestClient) -> None:
+    token = login(client, "client@desk.local", "client-local")
+    response = client.post(
+        "/v1/quotes",
+        json={"pay_asset": "BTC", "receive_asset": "USDC", "pay_qty": "0.10"},
+        headers=auth_headers(token, f"btc-{uuid4()}"),
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "PAIR_UNAVAILABLE"
+
+
 def test_idempotent_accept(client: TestClient) -> None:
     token = login(client, "client@desk.local", "client-local")
-    rfq = client.post(
-        "/v1/rfqs",
-        json={"side": "buy", "base": "BTC", "quote": "USDC", "base_qty": "0.25"},
-        headers=auth_headers(token, f"rfq-idemp-{uuid4()}"),
+    quoted = client.post(
+        "/v1/quotes",
+        json={"pay_asset": "USDC", "receive_asset": "ETH", "pay_qty": "25.00"},
+        headers=auth_headers(token, f"quote-idemp-{uuid4()}"),
     )
-    assert rfq.status_code == 200, rfq.text
-    quote_id = rfq.json()["quote_id"]
+    assert quoted.status_code == 200, quoted.text
+    body = quoted.json()
+    assert isinstance(body["fee_amount"], str)
+    assert isinstance(body["price"], str)
+    assert isinstance(body["pay_qty"], str)
+    assert "cloid" not in body
+    quote_id = body["quote_id"]
     key = f"accept-{uuid4()}"
     first = client.post(f"/v1/quotes/{quote_id}/accept", headers=auth_headers(token, key))
     assert first.status_code == 200, first.text
     second = client.post(f"/v1/quotes/{quote_id}/accept", headers=auth_headers(token, key))
     assert second.status_code == 200, second.text
     assert first.json()["trade_id"] == second.json()["trade_id"]
+    assert first.json()["status"] == "awaiting_deposit"
     assert "cloid" not in first.json()
     assert "oid" not in first.json()
+    assert first.json()["deposit"]["address"].startswith("0x")

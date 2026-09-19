@@ -103,6 +103,7 @@ class Trade(Base):
     cloid: Mapped[str] = mapped_column(String(66), unique=True, nullable=False)
     hedge_filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(36, 18), nullable=True)
     hedge_avg_price: Mapped[Decimal | None] = mapped_column(Numeric(36, 18), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -190,6 +191,25 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class Deposit(Base):
+    __tablename__ = "deposits"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    trade_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("trades.id"), unique=True, nullable=False
+    )
+    asset: Mapped[str] = mapped_column(String(8), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(36, 18), nullable=False)
+    address: Mapped[str] = mapped_column(String(66), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    chain_tx_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ReconResult(Base):
