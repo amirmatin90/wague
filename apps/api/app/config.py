@@ -46,6 +46,11 @@ def agent_key() -> str | None:
     return key or None
 
 
+def master_address() -> str | None:
+    master = os.environ.get("HL_MASTER_ADDRESS", "").strip()
+    return master or None
+
+
 def _agent_address(key: str) -> str:
     from eth_account import Account
 
@@ -79,6 +84,6 @@ def assert_testnet() -> None:
         raise SystemExit("Refuse to start: HL_API_URL must be the Hyperliquid testnet host.")
 
     key = agent_key()
-    master = os.environ.get("HL_MASTER_ADDRESS", "").strip()
+    master = master_address()
     if key and master and _agent_address(key).lower() == master.lower():
         raise SystemExit("Refuse to start: agent address equals HL_MASTER_ADDRESS.")

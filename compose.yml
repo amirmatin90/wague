@@ -23,6 +23,7 @@ services:
       HL_NETWORK: testnet
       HL_API_URL: https://api.hyperliquid-testnet.xyz
       HL_AGENT_KEY_TESTNET: ${HL_AGENT_KEY_TESTNET:-}
+      HL_MASTER_ADDRESS: ${HL_MASTER_ADDRESS:-}
       JWT_SECRET: local-dev-jwt-not-for-production
       QUOTE_TTL_MS: "20000"
     depends_on:

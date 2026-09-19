@@ -28,16 +28,19 @@ docker compose build --build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.
 
 Quotes use the public `/info` book. No key is required for that.
 
-To **execute**, export a testnet agent private key and restart compose:
+To **execute**, export a testnet agent private key and the master address that approved it, then restart compose:
 
 ```bash
-export HL_AGENT_KEY_TESTNET=0x...
+export HL_AGENT_KEY_TESTNET=0x...   # agent private key from app.hyperliquid-testnet.xyz/API
+export HL_MASTER_ADDRESS=0x...      # master account address that approved the agent AND holds testnet spot
 docker compose up --build
 ```
 
-Never commit that key. The API refuses to start if `HL_MASTER_KEY`, `HL_WITHDRAW_KEY`, `HL_AGENT_KEY_MAINNET`, a mainnet host, `HL_NETWORK=mainnet`, or an agent key whose address equals `HL_MASTER_ADDRESS` is present.
+Create the agent at [https://app.hyperliquid-testnet.xyz/API](https://app.hyperliquid-testnet.xyz/API). Fund the **master** on Hyperliquid testnet (USDC / UETH as needed). The agent signs orders for that master; it cannot withdraw and does not hold inventory.
 
-If the key is missing, the UI still quotes. Execute returns `set HL_AGENT_KEY_TESTNET`.
+Never commit those values. The API refuses to start if `HL_MASTER_KEY`, `HL_WITHDRAW_KEY`, `HL_AGENT_KEY_MAINNET`, a mainnet host, `HL_NETWORK=mainnet`, or an agent key whose address equals `HL_MASTER_ADDRESS` is present.
+
+If the key is missing, the UI still quotes. Execute returns `set HL_AGENT_KEY_TESTNET`. If the master address is missing, execute returns `set HL_MASTER_ADDRESS to the testnet master that approved the agent`.
 
 ## Seed users
 

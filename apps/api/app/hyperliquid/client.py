@@ -5,7 +5,7 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Any
 
-from app.config import TESTNET_API, TESTNET_WS, agent_key, get_settings
+from app.config import TESTNET_API, TESTNET_WS, agent_key, get_settings, master_address
 from app.errors import ApiError
 from app.hyperliquid.cloid import hedge_cloid
 from app.money import q_usdc
@@ -208,6 +208,13 @@ def place_spot_ioc(
             "HL_KEY_MISSING",
             "set HL_AGENT_KEY_TESTNET to execute on Hyperliquid testnet",
         )
+    master = master_address()
+    if not master:
+        raise ApiError(
+            503,
+            "HL_MASTER_MISSING",
+            "set HL_MASTER_ADDRESS to the testnet master that approved the agent",
+        )
     from eth_account import Account
     from hyperliquid.exchange import Exchange
     from hyperliquid.utils.types import Cloid
@@ -217,7 +224,7 @@ def place_spot_ioc(
     book = l2_book(market.coin)
     px = limit_px if limit_px is not None else aggressive_limit(book.mid, is_buy)
     wallet = Account.from_key(key)
-    exchange = Exchange(wallet, api_url(), timeout=8.0)
+    exchange = Exchange(wallet, api_url(), account_address=master, timeout=8.0)
     cloid = Cloid.from_str(hedge_cloid(trade_id))
     try:
         raw: dict[str, Any] = exchange.order(
