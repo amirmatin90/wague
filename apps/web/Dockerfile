@@ -1,7 +1,18 @@
-FROM node:22-alpine AS build
+FROM node:20-bookworm-slim AS build
 WORKDIR /web
-COPY package.json .
-RUN npm install
+
+# Optional mirror for regions where registry.npmjs.org is flaky or blocked.
+# Example: docker compose build --build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}
+
+COPY package.json package-lock.json ./
+
+RUN npm config set fetch-retries 5 \
+    && npm config set fetch-retry-mintimeout 20000 \
+    && npm config set fetch-retry-maxtimeout 120000 \
+    && npm ci
+
 COPY . .
 RUN npm run build
 

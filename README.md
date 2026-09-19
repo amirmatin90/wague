@@ -13,6 +13,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
+If `registry.npmjs.org` is blocked or flaky (common on some networks), rebuild the portal against a mirror:
+
+```bash
+docker compose build --build-arg NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+```
+
 - Swap UI: [http://127.0.0.1:8472/](http://127.0.0.1:8472/)
 - API: `http://127.0.0.1:8080` (published `127.0.0.1:8080:8080`)
 
